@@ -1,0 +1,6 @@
+{
+  "name": "ওপেন ব্রেফ (OPEN BRIEF)",
+  "description": "প্রিমিয়াম বাংলা ডিজিটাল নিউজ পোর্টাল - সত্যের সন্ধানে, খবরের সাথে।",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
