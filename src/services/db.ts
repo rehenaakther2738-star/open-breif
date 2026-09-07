@@ -66,8 +66,36 @@ class DatabaseService {
         query = query.order('published_at', { ascending: false });
         if (filter?.limit) query = query.limit(filter.limit);
 
-        const { data, error } = await query;
-        if (!error && data && data.length > 0) return data as Article[];
+        let { data, error } = await query;
+
+        // If join failed (e.g. FK relationship not cached or missing in Supabase), fallback to plain select
+        if (error) {
+          let plainQuery = supabase.from('articles').select('*');
+          if (filter?.status) plainQuery = plainQuery.eq('status', filter.status);
+          if (filter?.categoryId) plainQuery = plainQuery.eq('category_id', filter.categoryId);
+          if (filter?.authorId) plainQuery = plainQuery.eq('author_id', filter.authorId);
+          if (filter?.isFeatured !== undefined) plainQuery = plainQuery.eq('is_featured', filter.isFeatured);
+          if (filter?.isBreaking !== undefined) plainQuery = plainQuery.eq('is_breaking', filter.isBreaking);
+          if (filter?.search) plainQuery = plainQuery.ilike('title', `%${filter.search}%`);
+          plainQuery = plainQuery.order('published_at', { ascending: false });
+          if (filter?.limit) plainQuery = plainQuery.limit(filter.limit);
+
+          const fallbackRes = await plainQuery;
+          if (!fallbackRes.error && fallbackRes.data) {
+            data = fallbackRes.data;
+            error = null;
+          }
+        }
+
+        if (!error && data && data.length > 0) {
+          const categories = await this.getCategories();
+          const authors = await this.getAuthors();
+          return data.map((art: any) => ({
+            ...art,
+            category: art.category || categories.find(c => c.id === art.category_id),
+            author: art.author || authors.find(a => a.id === art.author_id),
+          })) as Article[];
+        }
       } catch (err) {
         console.warn('Supabase fetch failed, falling back to local store', err);
       }
@@ -122,12 +150,34 @@ class DatabaseService {
   async getArticleBySlug(slug: string): Promise<Article | null> {
     if (isSupabaseConfigured() && supabase) {
       try {
-        const { data, error } = await supabase
+        let { data, error } = await supabase
           .from('articles')
           .select('*, category:categories(*), author:authors(*)')
           .eq('slug', slug)
-          .single();
-        if (!error && data) return data as Article;
+          .maybeSingle();
+
+        // Fallback to plain select if relational join fails
+        if (error || !data) {
+          const fallback = await supabase
+            .from('articles')
+            .select('*')
+            .eq('slug', slug)
+            .maybeSingle();
+          if (!fallback.error && fallback.data) {
+            data = fallback.data;
+            error = null;
+          }
+        }
+
+        if (!error && data) {
+          const categories = await this.getCategories();
+          const authors = await this.getAuthors();
+          return {
+            ...data,
+            category: data.category || categories.find((c) => c.id === data.category_id),
+            author: data.author || authors.find((a) => a.id === data.author_id),
+          } as Article;
+        }
       } catch (err) {
         console.warn('Supabase fetch failed', err);
       }
@@ -169,7 +219,15 @@ class DatabaseService {
 
     if (isSupabaseConfigured() && supabase) {
       try {
-        await supabase.from('articles').insert([newArticle]);
+        const { error } = await supabase.from('articles').insert([newArticle]);
+        if (error) {
+          console.error('Supabase article insert error', error);
+          // If foreign key constraint failed on author_id or category_id, retry with null
+          if (error.code === '23503') {
+            const fallbackArticle = { ...newArticle, author_id: null, category_id: null };
+            await supabase.from('articles').insert([fallbackArticle]);
+          }
+        }
       } catch (e) {
         console.error('Supabase article insert error', e);
       }
